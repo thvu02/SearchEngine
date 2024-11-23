@@ -71,7 +71,7 @@ def process_faculty_pages(pages_collection, faculty_collection):
             'url': url,
             'page_id': member['_id'],
             'image_url': image_url,
-            'parse_faculty_info': main_section_html
+            'faculty_parse': main_section_html
         }
 
         # Store the faculty members in faculty collection
