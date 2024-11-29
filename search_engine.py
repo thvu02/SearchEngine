@@ -29,8 +29,8 @@ VECTORIZER_FILE = "vectorizer.pkl"
 INDEX_PATH="vector_index/index.bin"
 KEYS_PATH="vector_index/keys.pkl" 
 
-llm_weight=0.4
-tfidf_weight=0.6
+llm_weight=0.3
+tfidf_weight=0.7
 
 
 # Suppress warnings
@@ -291,7 +291,9 @@ def combine_rankings(ranking1, ranking2, weight1=0.5, weight2=0.5):
     for doc_id in all_doc_ids:
         score1 = ranking1_dict.get(doc_id, 0.0)
         score2 = ranking2_dict.get(doc_id, 0.0)
-        combined_scores[doc_id] = (weight1 / max_score1) * score1 + (weight2 / max_score2) * score2
+        # combined_scores[doc_id] = (weight1 / max_score1) * score1 + (weight2 / max_score2) * score2
+        combined_scores[doc_id] = weight1 * score1 + weight2 * score2
+
 
     # Sort by combined similarity scores in descending order
     sorted_combined = sorted(combined_scores.items(), key=lambda x: x[1], reverse=True)
@@ -376,7 +378,7 @@ def main_interface():
             # # print("\n\n")
 
             for res in final_res:
-                if res['similarity'] > 0.35:
+                if res['similarity'] > 0.07:
                     print(f"name = {res['name']}, similarity = {res['similarity']}, url = {res['url']}")
 
         else:
