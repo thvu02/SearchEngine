@@ -5,6 +5,7 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from collections import defaultdict
 from transformers import AutoTokenizer, AutoModel
 import torch
+import torch.nn.functional as F
 import numpy as np
 import os
 import faiss
@@ -117,6 +118,80 @@ def generate_embeddings_llma():
 
     return embeds
 
+def generate_embeddings():
+    """
+    Processes documents, divides them into chunks, and computes embeddings for each chunk.
+
+    Args:
+        documents (list of dict): List of document dictionaries. Each dict must have '_id' and 'text' keys.
+        model (AutoModel): Pre-trained model from HuggingFace Transformers for computing embeddings.
+        tokenizer (AutoTokenizer): Tokenizer corresponding to the pre-trained model.
+
+    Returns:
+        dict: A dictionary with document IDs as keys and their aggregated embeddings as values.
+    """
+
+    tokenizer = AutoTokenizer.from_pretrained('sentence-transformers/all-mpnet-base-v2')
+    model = AutoModel.from_pretrained('sentence-transformers/all-mpnet-base-v2')
+    device = torch.device("mps")
+    model = model.to(device)
+
+    def mean_pooling(model_output, attention_mask):
+        # Mean Pooling - Take attention mask into account for correct averaging
+        token_embeddings = model_output[0]  # First element of model_output contains all token embeddings
+        input_mask_expanded = attention_mask.unsqueeze(-1).expand(token_embeddings.size()).float()
+        return torch.sum(token_embeddings * input_mask_expanded, 1) / torch.clamp(input_mask_expanded.sum(1), min=1e-9)
+
+    embeds = {}
+    max_length = tokenizer.model_max_length  # Typically 512 for most models
+    documents = faculty_collection.find()
+    for doc in documents:
+        doc_id = str(doc['_id'])
+        text = doc.get('text', '')
+
+        if not text.strip():
+            print(f"No text available for document ID {doc_id}. Skipping...")
+            continue
+
+        # Tokenize and split the document into chunks within max_length
+        encoded_inputs = tokenizer(
+            text,
+            return_tensors="pt",
+            truncation=True,
+            max_length=max_length,
+            stride=max_length // 4,  # Use stride to create overlapping chunks
+            return_overflowing_tokens=True,
+            padding=True
+        )
+
+        chunk_embeddings = []
+
+        # Process each chunk independently
+        for i in range(len(encoded_inputs["input_ids"])):
+            input_ids = encoded_inputs["input_ids"][i].unsqueeze(0).to(device)
+            attention_mask = encoded_inputs["attention_mask"][i].unsqueeze(0).to(device)
+
+            with torch.no_grad():
+                model_output = model(input_ids, attention_mask=attention_mask)
+            
+            chunk_embedding = mean_pooling(model_output, attention_mask)
+            chunk_embeddings.append(chunk_embedding)
+
+        if chunk_embeddings:
+            final_embedding = torch.mean(torch.stack(chunk_embeddings), dim=0)
+
+            # Normalize the final embedding
+            final_embedding = F.normalize(final_embedding, p=2, dim=1)
+
+            embeds[doc_id] = final_embedding.squeeze().cpu().numpy()
+
+        else:
+            print(f"No valid chunks for document ID {doc_id}. Skipping...")
+
+    return embeds
+
+
+
 # IndexFlatIP
 def exact_search_index(embeddings):
     d = len(next(iter(embeddings.values())))  
@@ -149,7 +224,8 @@ def save_hnsw_index(index, keys, index_file_path, keys_file_path):
 def main():
 
     create_and_store_index_and_embeddings()
-    llm_embedding = generate_embeddings_llma()
+    # llm_embedding = generate_embeddings_llma()
+    llm_embedding = generate_embeddings()
     index, doc_ids = hnsw_index(llm_embedding)
     save_hnsw_index(index, doc_ids, "index.bin", "keys.pkl")
 
