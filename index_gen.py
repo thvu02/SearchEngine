@@ -119,17 +119,6 @@ def generate_embeddings_llma():
     return embeds
 
 def generate_embeddings():
-    """
-    Processes documents, divides them into chunks, and computes embeddings for each chunk.
-
-    Args:
-        documents (list of dict): List of document dictionaries. Each dict must have '_id' and 'text' keys.
-        model (AutoModel): Pre-trained model from HuggingFace Transformers for computing embeddings.
-        tokenizer (AutoTokenizer): Tokenizer corresponding to the pre-trained model.
-
-    Returns:
-        dict: A dictionary with document IDs as keys and their aggregated embeddings as values.
-    """
 
     tokenizer = AutoTokenizer.from_pretrained('sentence-transformers/all-mpnet-base-v2')
     model = AutoModel.from_pretrained('sentence-transformers/all-mpnet-base-v2')
