@@ -1,5 +1,6 @@
 import pymongo
 import torch
+import torch.nn.functional as F
 from transformers import AutoTokenizer, AutoModel
 import numpy as np
 import pickle
@@ -13,6 +14,7 @@ import pandas as pd
 import warnings
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor
 import faiss
 
 
@@ -27,8 +29,8 @@ VECTORIZER_FILE = "vectorizer.pkl"
 INDEX_PATH="vector_index/index.bin"
 KEYS_PATH="vector_index/keys.pkl" 
 
-llm_weight=0.5
-tfidf_weight=0.5
+llm_weight=0.4
+tfidf_weight=0.6
 
 
 # Suppress warnings
@@ -98,57 +100,101 @@ def query_index(index, query_embedding, k=10, doc_ids=None):
 
 def query_embedding(query, model, tokenizer, device ,index, keys, k):
 
-    def split_into_chunks(text, tokenizer, chunk_size=1024):
+    # def split_into_chunks(text, tokenizer, chunk_size=1024):
 
-        tokens = tokenizer.encode(text)
-        return [tokenizer.decode(tokens[i:i + chunk_size]) for i in range(0, len(tokens), chunk_size)]
+    #     tokens = tokenizer.encode(text)
+    #     return [tokenizer.decode(tokens[i:i + chunk_size]) for i in range(0, len(tokens), chunk_size)]
 
-    text_chunks = split_into_chunks(query, tokenizer)
+    # text_chunks = split_into_chunks(query, tokenizer)
+    # chunk_embeddings = []
+
+    # for chunk in text_chunks:
+    #     inputs = tokenizer(chunk, return_tensors="pt", max_length=1024, padding="max_length", truncation=True).to(device)
+    #     with torch.no_grad():
+    #         outputs = model(**inputs, output_hidden_states=True)
+    #         hidden_states = outputs.hidden_states
+    #         last_hidden_state = hidden_states[-1]
+    #         attention_mask = inputs.attention_mask
+
+
+    #         chunk_embedding = (last_hidden_state * attention_mask.unsqueeze(-1)).sum(dim=1) / attention_mask.sum(dim=1, keepdim=True)
+    #         chunk_embeddings.append(chunk_embedding[0].cpu().numpy())
+
+    # if not chunk_embeddings:
+    #     print("No valid embeddings for the query.")
+    #     return None
+
+    # query_embedding = np.mean(chunk_embeddings, axis=0)
+    # query_embedding /= np.linalg.norm(query_embedding)  
+
+
+    # results = query_index(index, query_embedding, k, keys)
+
+    # return results
+    def mean_pooling(model_output, attention_mask):
+        # Mean Pooling - Take attention mask into account for correct averaging
+        token_embeddings = model_output[0]  # First element of model_output contains all token embeddings
+        input_mask_expanded = attention_mask.unsqueeze(-1).expand(token_embeddings.size()).float()
+        return torch.sum(token_embeddings * input_mask_expanded, 1) / torch.clamp(input_mask_expanded.sum(1), min=1e-9)
+
+    # Split the query into manageable chunks
+    encoded_inputs = tokenizer(
+        query,
+        return_tensors="pt",
+        truncation=True,
+        max_length=tokenizer.model_max_length,
+        stride=tokenizer.model_max_length // 4,  # Overlap chunks for better context
+        return_overflowing_tokens=True,
+        padding=True
+    )
+
     chunk_embeddings = []
 
-    for chunk in text_chunks:
-        inputs = tokenizer(chunk, return_tensors="pt", max_length=1024, padding="max_length", truncation=True).to(device)
+    # Process each chunk independently
+    for i in range(len(encoded_inputs["input_ids"])):
+        input_ids = encoded_inputs["input_ids"][i].unsqueeze(0).to(device)
+        attention_mask = encoded_inputs["attention_mask"][i].unsqueeze(0).to(device)
+
         with torch.no_grad():
-            outputs = model(**inputs, output_hidden_states=True)
-            hidden_states = outputs.hidden_states
-            last_hidden_state = hidden_states[-1]
-            attention_mask = inputs.attention_mask
-
-
-            chunk_embedding = (last_hidden_state * attention_mask.unsqueeze(-1)).sum(dim=1) / attention_mask.sum(dim=1, keepdim=True)
-            chunk_embeddings.append(chunk_embedding[0].cpu().numpy())
+            model_output = model(input_ids, attention_mask=attention_mask)
+            chunk_embedding = mean_pooling(model_output, attention_mask)
+            chunk_embeddings.append(chunk_embedding)
 
     if not chunk_embeddings:
         print("No valid embeddings for the query.")
         return None
 
-    query_embedding = np.mean(chunk_embeddings, axis=0)
-    query_embedding /= np.linalg.norm(query_embedding)  
+    # Aggregate chunk embeddings into a single query embedding
+    query_embedding = torch.mean(torch.stack(chunk_embeddings), dim=0)
 
+    # Normalize the query embedding
+    query_embedding = F.normalize(query_embedding, p=2, dim=1).squeeze(0).cpu().numpy()
 
+    # Perform similarity search using the query embedding
     results = query_index(index, query_embedding, k, keys)
 
     return results
 
 
 def query_search_tfidf(query_sentence, vectorizer):
-
     query_vector = vectorizer.transform([query_sentence]).toarray()
-    query_terms = vectorizer.get_feature_names_out()  
-    candidate_docs = defaultdict(float)  
-    document_embeddings = {}  
+    query_terms = vectorizer.inverse_transform(query_vector)[0]  
+    candidate_docs = defaultdict(float)
+    document_embeddings = {}
 
-    for term in query_terms:
+    for term in query_terms:  
         term_entry = inverted_index_collection.find_one({"term": term})
         if term_entry:
             for doc in term_entry['documents']:
                 doc_id = doc['document_id']
-                candidate_docs[doc_id] += doc['tfidf_score']  
+                candidate_docs[doc_id] += doc['tfidf_score']
+    
 
     for doc_id in candidate_docs.keys():
         embedding_entry = embeddings_collection.find_one({"document_id": doc_id})
         if embedding_entry:
             document_embeddings[doc_id] = np.array(embedding_entry["tfidf"])
+    
 
     results = []
     for doc_id, embedding in document_embeddings.items():
@@ -160,34 +206,96 @@ def query_search_tfidf(query_sentence, vectorizer):
     return results
 
 
+
+# def combine_rankings(ranking1, ranking2, weight1=0.5, weight2=0.5):
+#     ranking1_dict = {item['document_id']: item['similarity'] for item in ranking1}
+#     if ranking1_dict:
+#         min_val, max_val = min(ranking1_dict.values()), max(ranking1_dict.values())
+#         if max_val > min_val:  
+#             normalized_ranking1 = {doc_id: (sim - min_val) / (max_val - min_val) * 0.99 + 0.01
+#                                    for doc_id, sim in ranking1_dict.items()}
+#         else:
+#             normalized_ranking1 = {doc_id: 0.5 for doc_id in ranking1_dict} 
+#     else:
+#         normalized_ranking1 = {}
+
+#     ranking2_doc_ids, ranking2_similarities = ranking2
+#     if ranking2_doc_ids:
+#         min_val, max_val = ranking2_similarities.min(), ranking2_similarities.max()
+#         if max_val > min_val:  # Avoid division by zero
+#             normalized_ranking2 = {doc_id: (sim - min_val) / (max_val - min_val) * 0.99 + 0.01
+#                                    for doc_id, sim in zip(ranking2_doc_ids, ranking2_similarities)}
+#         else:
+#             normalized_ranking2 = {doc_id: 0.5 for doc_id in ranking2_doc_ids}  
+#     else:
+#         normalized_ranking2 = {}
+
+#     combined_scores = {}
+#     all_doc_ids = set(normalized_ranking1.keys()).union(normalized_ranking2.keys())
+#     for doc_id in all_doc_ids:
+#         score1 = normalized_ranking1.get(doc_id, 0.0)  
+#         score2 = normalized_ranking2.get(doc_id, 0.0)  
+#         combined_scores[doc_id] = weight1 * score1 + weight2 * score2
+
+#     sorted_combined = sorted(combined_scores.items(), key=lambda x: x[1], reverse=True)
+#     return [{'document_id': doc_id, 'similarity': score} for doc_id, score in sorted_combined]
+
+
+
+# def combine_rankings(ranking1, ranking2, weight1=0.5, weight2=0.5):
+#     import numpy as np
+    
+#     # Extract scores from ranking1
+#     ranking1_dict = {item['document_id']: item['similarity'] for item in ranking1}
+#     if ranking1_dict:
+#         ranking1_scores = np.array(list(ranking1_dict.values()))
+#         mean1, std1 = ranking1_scores.mean(), ranking1_scores.std()
+#         z_scores_ranking1 = {doc_id: (score - mean1) / (std1 if std1 > 0 else 1)
+#                              for doc_id, score in ranking1_dict.items()}
+#     else:
+#         z_scores_ranking1 = {}
+
+#     # Extract scores from ranking2
+#     ranking2_doc_ids, ranking2_similarities = ranking2
+#     if ranking2_doc_ids:
+#         mean2, std2 = ranking2_similarities.mean(), ranking2_similarities.std()
+#         z_scores_ranking2 = {doc_id: (score - mean2) / (std2 if std2 > 0 else 1)
+#                              for doc_id, score in zip(ranking2_doc_ids, ranking2_similarities)}
+#     else:
+#         z_scores_ranking2 = {}
+
+#     # Combine rankings with weighted average
+#     combined_scores = {}
+#     all_doc_ids = set(z_scores_ranking1.keys()).union(z_scores_ranking2.keys())
+#     for doc_id in all_doc_ids:
+#         score1 = z_scores_ranking1.get(doc_id, 0.0)  # Missing documents get 0
+#         score2 = z_scores_ranking2.get(doc_id, 0.0)  # Missing documents get 0
+#         combined_scores[doc_id] = weight1 * score1 + weight2 * score2
+
+#     # Sort by combined similarity scores in descending order
+#     sorted_combined = sorted(combined_scores.items(), key=lambda x: x[1], reverse=True)
+
+#     return [{'document_id': doc_id, 'similarity': score} for doc_id, score in sorted_combined]
+
+
 def combine_rankings(ranking1, ranking2, weight1=0.5, weight2=0.5):
-
-    # Extract similarities and normalize ranking1 using MinMaxScaler
     ranking1_dict = {item['document_id']: item['similarity'] for item in ranking1}
-    scaler1 = MinMaxScaler()
-    ranking1_similarities = np.array(list(ranking1_dict.values())).reshape(-1, 1)
-    normalized_ranking1_similarities = scaler1.fit_transform(ranking1_similarities).flatten()
-    normalized_ranking1 = {doc_id: score for doc_id, score in zip(ranking1_dict.keys(), normalized_ranking1_similarities)}
-
-    # Normalize ranking2 similarities using MinMaxScaler
     ranking2_doc_ids, ranking2_similarities = ranking2
-    scaler2 = MinMaxScaler()
-    ranking2_similarities = ranking2_similarities.reshape(-1, 1)
-    normalized_ranking2_similarities = scaler2.fit_transform(ranking2_similarities).flatten()
-    normalized_ranking2 = {doc_id: score for doc_id, score in zip(ranking2_doc_ids, normalized_ranking2_similarities)}
+    ranking2_dict = {doc_id: score for doc_id, score in zip(ranking2_doc_ids, ranking2_similarities)}
 
-    # Combine rankings with weighted average
+    max_score1 = max(ranking1_dict.values(), default=1)
+    max_score2 = max(ranking2_dict.values(), default=1)
+
     combined_scores = {}
-    all_doc_ids = set(normalized_ranking1.keys()).union(normalized_ranking2.keys())
+    all_doc_ids = set(ranking1_dict.keys()).union(ranking2_dict.keys())
     for doc_id in all_doc_ids:
-        score1 = normalized_ranking1.get(doc_id, 0.0)  
-        score2 = normalized_ranking2.get(doc_id, 0.0) 
-        combined_scores[doc_id] = weight1 * score1 + weight2 * score2
+        score1 = ranking1_dict.get(doc_id, 0.0)
+        score2 = ranking2_dict.get(doc_id, 0.0)
+        combined_scores[doc_id] = (weight1 / max_score1) * score1 + (weight2 / max_score2) * score2
 
     # Sort by combined similarity scores in descending order
     sorted_combined = sorted(combined_scores.items(), key=lambda x: x[1], reverse=True)
 
-    # Format as a list of dictionaries
     return [{'document_id': doc_id, 'similarity': score} for doc_id, score in sorted_combined]
 
 
@@ -201,21 +309,25 @@ def main_interface():
     
 
 
-    model_name = "meta-llama/Llama-3.2-1B-Instruct"
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-        
-    if tokenizer.pad_token is None:
-        tokenizer.add_special_tokens({'pad_token': tokenizer.eos_token})
+    # model_name = "meta-llama/Llama-3.2-1B-Instruct"
+    # tokenizer = AutoTokenizer.from_pretrained(model_name)
+    # if tokenizer.pad_token is None:
+    #     tokenizer.add_special_tokens({'pad_token': tokenizer.eos_token})
+    # model = AutoModel.from_pretrained(model_name)
+    # model.resize_token_embeddings(len(tokenizer))
+    # device = torch.device("mps")
+    # model = model.to(device)
 
-    model = AutoModel.from_pretrained(model_name)
-    model.resize_token_embeddings(len(tokenizer))
+    
+    tokenizer = AutoTokenizer.from_pretrained('sentence-transformers/all-mpnet-base-v2')
+    model = AutoModel.from_pretrained('sentence-transformers/all-mpnet-base-v2')
     device = torch.device("mps")
     model = model.to(device)
     
 
     index, keys = load_hnsw_index(INDEX_PATH, KEYS_PATH)
 
-    query_embedding("test", model, tokenizer, device ,index, keys, 10)
+    query_embedding("test", model, tokenizer, device ,index, keys, 5)
 
     print("a. Enter Query \nb. Exit")
 
@@ -236,30 +348,40 @@ def main_interface():
             print(f"\nPerforming query search for: '{query}'\n")
 
 
-            start_time = time.time()
-            tfidf_results = query_search_tfidf(query, vectorizer)
-            end_time = time.time()
+            # Measure overall execution time
+            overall_start_time = time.time()
 
-            start_time2 = time.time()
-            llm_results = query_embedding(query, model, tokenizer, device ,index, keys, 10)
-            end_time2 = time.time()
+            with ThreadPoolExecutor() as executor:
+                # Run the functions in parallel
+                future_tfidf = executor.submit(query_search_tfidf, query, vectorizer)
+                future_llm = executor.submit(query_embedding, query, model, tokenizer, device, index, keys, 10)
 
-            print(end_time - start_time)
-            print(end_time2 - start_time2)
+                # Wait for results
+                tfidf_results = future_tfidf.result()
+                llm_results = future_llm.result()
+
+            overall_end_time = time.time()
+            # print(overall_end_time - overall_start_time)
+
+            # print(tfidf_results)
+            # print()
+            # print(llm_results)
 
             
             results = combine_rankings(tfidf_results, llm_results, tfidf_weight, llm_weight)
 
             final_res = cross_reference_results(results, faculty_collection)
 
-            print(final_res)
-            # print("\n\n")
+            # # print(final_res)
+            # # print("\n\n")
 
-            # for res in final_res:
-            #     print(f"name = {res['name']}, similarity = {res['similarity']}, url = {res['url']}")
+            for res in final_res:
+                if res['similarity'] > 0.35:
+                    print(f"name = {res['name']}, similarity = {res['similarity']}, url = {res['url']}")
 
         else:
             print("Invalid choice.")
 
 # Start the user interface
 main_interface()
+
