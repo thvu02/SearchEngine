@@ -13,7 +13,7 @@ Our team as build a search engine specifically for Cal Poly Pomona's [Biology De
 ```
 
 # To Run this Project
-- Ensure you have all dependecies downloaded (check environemnt.yml)
+- Ensure you have all dependecies downloaded (check ```environment.yml```)
 - Run the following code in your terminal ```streamlit run interface.py```
 - If you get an error involving HuggingFace
     - It is likely because you do not have a token to run their Llama 3.2 models
