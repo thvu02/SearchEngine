@@ -38,7 +38,7 @@ def process_faculty_pages(pages_collection, faculty_collection):
 
         # get the area of search content 
         main_body_text = ''
-        main_body = bs.find('div', class_='blurb')
+        main_body = bs.find('div', id='main-body')
         if main_body:
             main_body_text = main_body.get_text(separator='\n', strip=True)
             print(f"Extracted Main Body Text from {url}")
