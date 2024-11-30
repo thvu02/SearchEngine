@@ -13,7 +13,7 @@ import faiss
 
 # MongoDB connection details
 client = MongoClient('mongodb://localhost:27017/')  
-db = client['Project']  # Database name
+db = client['CPP']  # Database name
 faculty_collection = db['faculty']  # Source collection name
 inverted_index_collection = db['inverted_index']  # Collection for inverted index
 embeddings_collection = db['embeddings']  # Collection for document embeddings
@@ -55,7 +55,7 @@ def create_and_store_index_and_embeddings():
     print("Inverted index saved to MongoDB.")
 
     # Convert TF-IDF matrix to document vectors and store them
-    document_vectors = tfidf_matrix.toarray()  # 
+    document_vectors = tfidf_matrix.toarray()
     embeddings_collection.delete_many({})  
     for doc_idx, doc_id in enumerate(doc_ids):
         embeddings_collection.insert_one({
@@ -76,7 +76,7 @@ def generate_embeddings_llma():
     model = AutoModel.from_pretrained(model_name)
     model.resize_token_embeddings(len(tokenizer))
     
-    device = torch.device("mps")
+    device = torch.device("cpu")
     model = model.to(device)
 
     def split_into_chunks(text, tokenizer, chunk_size=1024):
@@ -122,7 +122,7 @@ def generate_embeddings():
 
     tokenizer = AutoTokenizer.from_pretrained('sentence-transformers/all-mpnet-base-v2')
     model = AutoModel.from_pretrained('sentence-transformers/all-mpnet-base-v2')
-    device = torch.device("mps")
+    device = torch.device("cpu")
     model = model.to(device)
 
     def mean_pooling(model_output, attention_mask):

@@ -20,7 +20,7 @@ import faiss
 
 
 client = pymongo.MongoClient()
-db = client['Project']
+db = client['CPP']
 faculty_collection = db['faculty']
 inverted_index_collection = db['inverted_index']  
 embeddings_collection = db['embeddings']
@@ -70,11 +70,13 @@ def cross_reference_results(combined_results, collection):
         # Extract details and enrich the result
         professor_name = document.get("name", "Name not available")
         professor_url = document.get("url", "URL not available")
+        professor_text_snippet = document.get("text_snippet", "Text Snippet not available")
         enriched_results.append({
             "document_id": doc_id,
             "similarity": similarity,
             "name": professor_name,
-            "url": professor_url
+            "url": professor_url,
+            "text_snippet": professor_text_snippet
         })
 
     return enriched_results
@@ -323,7 +325,7 @@ def main_interface():
     
     tokenizer = AutoTokenizer.from_pretrained('sentence-transformers/all-mpnet-base-v2')
     model = AutoModel.from_pretrained('sentence-transformers/all-mpnet-base-v2')
-    device = torch.device("mps")
+    device = torch.device("cpu")
     model = model.to(device)
     
 
@@ -379,7 +381,7 @@ def main_interface():
 
             for res in final_res:
                 if res['similarity'] > 0.07:
-                    print(f"name = {res['name']}, similarity = {res['similarity']}, url = {res['url']}")
+                    print(f"name = {res['name']}, similarity = {res['similarity']}, url = {res['url']}, \n{res['text_snippet']} \n")
 
         else:
             print("Invalid choice.")
