@@ -218,4 +218,5 @@ def main():
     index, doc_ids = hnsw_index(llm_embedding)
     save_hnsw_index(index, doc_ids, "index.bin", "keys.pkl")
 
-main()
+if '__name__' == '__main__':
+    main()

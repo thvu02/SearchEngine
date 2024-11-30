@@ -1,0 +1,4 @@
+# ignore outputs from running the code
+__pycache__/
+vector_index/
+vectorizer.pkl

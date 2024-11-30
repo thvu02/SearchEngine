@@ -1,0 +1,20 @@
+name: searchengine
+channels:
+  - anaconda
+  - conda-forge
+  - pytorch
+dependencies:
+  - python
+  - urllib3 
+  - beautifulsoup4 - 
+  - regex
+  - pymongo
+  - pprintpp
+  - pickle5
+  - numpy
+  - scikit-learn
+  - huggingface_hub
+  - pytorch
+  - faiss
+  - pandas
+  - accelerate 

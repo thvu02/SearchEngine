@@ -387,5 +387,5 @@ def main_interface():
             print("Invalid choice.")
 
 # Start the user interface
-main_interface()
-
+if '__name__' == '__main__':
+    main_interface()
